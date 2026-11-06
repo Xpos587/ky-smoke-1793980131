@@ -117,11 +117,11 @@ jobs:
               sys.exit(f"{total >> 20} MiB exceeds the {os.environ['CAP']} MiB reservation")
           print(f"{len(files)} file(s), {total} bytes")
           PY
-      # Same directory the cap step measured: upload resolves from the repo root
-      # otherwise, and the build writes inside the worktree.
+      # The path carries the same directory the cap step measured: a `uses` step
+      # takes no working-directory and resolves from the repo root instead.
       - uses: actions/upload-artifact@v5
-        working-directory: work/${{ inputs.worktree_dir }}
         with:
           name: result
-          path: ${{ inputs.artifact_globs }}
+          path: work/${{ inputs.worktree_dir }}/${{ inputs.artifact_globs }}
+          if-no-files-found: error
           retention-days: 1
