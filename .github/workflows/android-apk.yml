@@ -1,0 +1,122 @@
+name: keyrelay android apk
+
+on:
+  workflow_dispatch:
+    inputs:
+      job_id: {required: true}
+      source_url: {required: true}
+      repo: {required: false, default: ""}
+      ref: {required: false, default: ""}
+      env_json: {required: false, default: "{}"}
+      worktree_dir: {required: false, default: ""}
+      artifact_globs: {required: false, default: "**/*.apk"}
+      artifact_cap: {required: false, default: "200"}
+      runner_label: {required: false, default: "blacksmith-4vcpu-ubuntu-2404"}
+      max_minutes: {required: false, default: "30"}
+
+permissions:
+  contents: read
+
+concurrency: keyrelay-${{ inputs.job_id }}
+run-name: ky-${{ inputs.job_id }}
+
+jobs:
+  build:
+    runs-on: ${{ inputs.runner_label }}
+    timeout-minutes: ${{ fromJSON(inputs.max_minutes) }}
+    steps:
+      # The source is validated while it is unpacked: absolute paths, "..",
+      # escaping symlinks and entry/size caps, before any build step runs (§7).
+      - name: fetch source
+        env:
+          SOURCE_URL: ${{ inputs.source_url }}
+          REPO: ${{ inputs.repo }}
+          REF: ${{ inputs.ref }}
+        run: |
+          mkdir -p work
+          if [ -n "$REPO" ]; then
+            git init -q work && cd work
+            git remote add origin "https://github.com/$REPO.git"
+            git fetch -q --depth 1 origin "$REF"
+            git checkout -q FETCH_HEAD
+            exit 0
+          fi
+          curl -fsSL --max-time 180 "$SOURCE_URL" -o src.tar
+          python3 - <<'PY'
+          import sys, tarfile, pathlib
+          dest = pathlib.Path("work"); dest.mkdir(exist_ok=True)
+          entries = inflated = 0
+          with tarfile.open("src.tar") as t:
+              for m in t:
+                  entries += 1
+                  if entries > 20000:
+                      sys.exit("too many entries")
+                  p = pathlib.PurePosixPath(m.name)
+                  if p.is_absolute() or ".." in p.parts:
+                      sys.exit(f"bad path {m.name}")
+                  target = dest.joinpath(*p.parts)
+                  if m.isdir():
+                      target.mkdir(parents=True, exist_ok=True)
+                  elif m.issym() or m.islnk():
+                      link = pathlib.PurePosixPath(m.linkname)
+                      if link.is_absolute() or ".." in p.parent.joinpath(link).parts:
+                          sys.exit(f"symlink {m.name} escapes the tree")
+                      target.parent.mkdir(parents=True, exist_ok=True)
+                      target.unlink(missing_ok=True)
+                      target.symlink_to(m.linkname)
+                  elif m.isfile():
+                      if m.size > 64 << 20:
+                          sys.exit(f"{m.name} exceeds the file cap")
+                      inflated += m.size
+                      if inflated > 500 << 20:
+                          sys.exit("archive inflates past the cap")
+                      target.parent.mkdir(parents=True, exist_ok=True)
+                      with t.extractfile(m) as src, open(target, "wb") as out:
+                          while chunk := src.read(1 << 20):
+                              out.write(chunk)
+          PY
+      - uses: actions/setup-java@v5
+        with: {distribution: temurin, java-version: "21"}
+      # Caller env is applied process-scoped, never through $GITHUB_ENV (§8).
+      # NUL-separated, so a newline in a value survives untouched.
+      - name: build
+        working-directory: work/${{ inputs.worktree_dir }}
+        env:
+          ENV_JSON: ${{ inputs.env_json }}
+        run: |
+          mapfile -d '' -t pairs < <(printf '%s' "$ENV_JSON" | python3 -c '
+          import json, sys
+          for k, v in json.load(sys.stdin).items(): sys.stdout.write(f"{k}={v}\0")
+          ')
+          if [ -x ./gradlew ]; then
+            printf '%s\0' ./gradlew --no-daemon assembleDebug > args.nul
+          else
+            printf '%s\0' sh -c 'yes | sdkmanager --licenses >/dev/null 2>&1 || true; ./bootstrap.sh' > args.nul
+          fi
+          env "${pairs[@]}" xargs -0 -a args.nul bash -c '"$@"' --
+      # The reservation must bound the upload, so the selection is measured
+      # before GitHub storage is spent (§8).
+      - name: cap artifacts
+        if: always()
+        working-directory: work/${{ inputs.worktree_dir }}
+        env:
+          GLOBS: ${{ inputs.artifact_globs }}
+          CAP: ${{ inputs.artifact_cap }}
+        run: |
+          python3 - <<'PY'
+          import glob, os, sys
+          patterns = [g for g in os.environ["GLOBS"].splitlines() if g.strip()]
+          files = {f for p in patterns for f in glob.glob(p, recursive=True) if os.path.isfile(f)}
+          cap = int(float(os.environ["CAP"]) * (1 << 20))
+          total = sum(os.path.getsize(f) for f in files)
+          if len(files) > 200:
+              sys.exit(f"{len(files)} files exceed the 200 cap")
+          if total > cap:
+              sys.exit(f"{total >> 20} MiB exceeds the {os.environ['CAP']} MiB reservation")
+          print(f"{len(files)} file(s), {total} bytes")
+          PY
+      - uses: actions/upload-artifact@v5
+        with:
+          name: result
+          path: ${{ inputs.artifact_globs }}
+          retention-days: 1
