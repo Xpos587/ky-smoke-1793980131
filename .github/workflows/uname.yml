@@ -93,8 +93,12 @@ jobs:
           printf '%s\0' sh -c 'uname -a > uname.txt' > args.nul
           env "${pairs[@]}" xargs -0 -a args.nul bash -c '"$@"' --
       # The reservation must bound the upload, so the selection is measured
-      # before GitHub storage is spent (§8).
+      # before GitHub storage is spent (§8). The same step emits the uploader's
+      # path list, so what is counted is exactly what is uploaded: a `uses` step
+      # takes no working-directory, and a multi-line path input gets no prefix of
+      # its own.
       - name: cap artifacts
+        id: cap
         if: always()
         working-directory: work
         env:
@@ -104,20 +108,26 @@ jobs:
           python3 - <<'PY'
           import glob, os, sys
           patterns = [g for g in os.environ["GLOBS"].splitlines() if g.strip()]
-          files = {f for p in patterns for f in glob.glob(p, recursive=True) if os.path.isfile(f)}
+          files = sorted({f for p in patterns for f in glob.glob(p, recursive=True) if os.path.isfile(f)})
           cap = int(float(os.environ["CAP"]) * (1 << 20))
           total = sum(os.path.getsize(f) for f in files)
           if len(files) > 200:
               sys.exit(f"{len(files)} files exceed the 200 cap")
           if total > cap:
               sys.exit(f"{total >> 20} MiB exceeds the {os.environ['CAP']} MiB reservation")
+          ws = os.environ["GITHUB_WORKSPACE"]
+          prefix = os.path.relpath(os.getcwd(), ws)
+          with open(os.path.join(ws, "artifact_paths.txt"), "w") as out:
+              out.writelines(os.path.normpath(os.path.join(prefix, f)) + "\n" for f in files)
           print(f"{len(files)} file(s), {total} bytes")
           PY
-      # The path carries the same directory the cap step measured: a `uses` step
-      # takes no working-directory and resolves from the repo root instead.
+          {
+            echo 'paths<<__EOF__'
+            cat "$GITHUB_WORKSPACE/artifact_paths.txt"
+            echo '__EOF__'
+          } >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v5
         with:
           name: result
-          path: work/${{ inputs.artifact_globs }}
-          if-no-files-found: error
+          path: ${{ steps.cap.outputs.paths }}
           retention-days: 1
