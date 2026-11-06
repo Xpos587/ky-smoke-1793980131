@@ -106,7 +106,15 @@ jobs:
           CAP: ${{ inputs.artifact_cap }}
         run: |
           python3 - <<'PY'
-          import glob, os, sys
+          import glob, os, re, sys
+
+          # The uploader globs its path input, so a matched name must be escaped
+          # or a literal "[ab].apk" would select a/b.apk, which the cap step never
+          # measured. Same algorithm as @actions/glob's globEscape.
+          def glob_escape(p):
+              p = p.replace("\\", "\\\\")
+              p = re.sub(r"(\[)(?=[^/]+\])", r"[[]", p)
+              return p.replace("?", "[?]").replace("*", "[*]")
           patterns = [g for g in os.environ["GLOBS"].splitlines() if g.strip()]
           files = sorted({f for p in patterns for f in glob.glob(p, recursive=True) if os.path.isfile(f)})
           cap = int(float(os.environ["CAP"]) * (1 << 20))
@@ -117,8 +125,11 @@ jobs:
               sys.exit(f"{total >> 20} MiB exceeds the {os.environ['CAP']} MiB reservation")
           ws = os.environ["GITHUB_WORKSPACE"]
           prefix = os.path.relpath(os.getcwd(), ws)
+          for f in files:
+              if "\n" in f or "\r" in f:
+                  sys.exit(f"newline in a file name: {f!r}")
           with open(os.path.join(ws, "artifact_paths.txt"), "w") as out:
-              out.writelines(os.path.normpath(os.path.join(prefix, f)) + "\n" for f in files)
+              out.writelines(glob_escape(os.path.normpath(os.path.join(prefix, f))) + "\n" for f in files)
           print(f"{len(files)} file(s), {total} bytes")
           PY
           {
@@ -126,7 +137,11 @@ jobs:
             cat "$GITHUB_WORKSPACE/artifact_paths.txt"
             echo '__EOF__'
           } >> "$GITHUB_OUTPUT"
+      # An empty list is a required input of the action, so it has to be skipped
+      # rather than passed through: a build whose selectors match nothing is
+      # still a success with zero artifacts (§8).
       - uses: actions/upload-artifact@v5
+        if: ${{ success() && steps.cap.outputs.paths != '' }}
         with:
           name: result
           path: ${{ steps.cap.outputs.paths }}
