@@ -88,9 +88,9 @@ jobs:
           import json, sys
           for k, v in json.load(sys.stdin).items(): sys.stdout.write(f"{k}={v}\0")
           ')
-          printf '%s\0' \
-            : "${{ inputs.job_id }}" \
-            uname -a '>' uname.txt > args.nul
+          # `xargs bash -c '"$@"' -- CMD...` makes the first argument the command,
+          # so a bare `'>'` word would be swallowed: the redirect needs its own sh.
+          printf '%s\0' sh -c 'uname -a > uname.txt' > args.nul
           env "${pairs[@]}" xargs -0 -a args.nul bash -c '"$@"' --
       # The reservation must bound the upload, so the selection is measured
       # before GitHub storage is spent (§8).
