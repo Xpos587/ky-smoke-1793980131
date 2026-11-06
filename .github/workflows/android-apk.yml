@@ -45,7 +45,7 @@ jobs:
           fi
           curl -fsSL --max-time 180 "$SOURCE_URL" -o src.tar
           python3 - <<'PY'
-          import sys, tarfile, pathlib
+          import os, sys, tarfile, pathlib
           dest = pathlib.Path("work"); dest.mkdir(exist_ok=True)
           entries = inflated = 0
           with tarfile.open("src.tar") as t:
@@ -76,6 +76,7 @@ jobs:
                       with t.extractfile(m) as src, open(target, "wb") as out:
                           while chunk := src.read(1 << 20):
                               out.write(chunk)
+                      os.chmod(target, (m.mode & 0o777) or 0o644)
           PY
       - uses: actions/setup-java@v5
         with: {distribution: temurin, java-version: "21"}
