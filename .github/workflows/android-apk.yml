@@ -45,7 +45,7 @@ jobs:
           fi
           curl -fsSL --max-time 180 "$SOURCE_URL" -o src.tar
           python3 - <<'PY'
-          import os, sys, tarfile, pathlib
+          import os, posixpath, sys, tarfile, pathlib
           dest = pathlib.Path("work"); dest.mkdir(exist_ok=True)
           entries = inflated = 0
           with tarfile.open("src.tar") as t:
@@ -60,12 +60,20 @@ jobs:
                   if m.isdir():
                       target.mkdir(parents=True, exist_ok=True)
                   elif m.issym() or m.islnk():
+                      # A symlink target is relative to its own directory, an
+                      # archive-root-relative hardlink to the tree root. Both are
+                      # normalised, so "sub/../x" stays legal and only a path
+                      # climbing out of the tree is refused.
                       link = pathlib.PurePosixPath(m.linkname)
-                      if link.is_absolute() or ".." in p.parent.joinpath(link).parts:
-                          sys.exit(f"symlink {m.name} escapes the tree")
+                      base = p.parent if m.issym() else pathlib.PurePosixPath()
+                      if link.is_absolute():
+                          sys.exit(f"link {m.name} is absolute")
+                      resolved = posixpath.normpath(base / link)
+                      if resolved == ".." or resolved.startswith("../"):
+                          sys.exit(f"link {m.name} escapes the tree")
                       target.parent.mkdir(parents=True, exist_ok=True)
                       target.unlink(missing_ok=True)
-                      target.symlink_to(m.linkname)
+                      target.symlink_to(os.path.relpath(resolved, str(p.parent)))
                   elif m.isfile():
                       if m.size > 64 << 20:
                           sys.exit(f"{m.name} exceeds the file cap")
