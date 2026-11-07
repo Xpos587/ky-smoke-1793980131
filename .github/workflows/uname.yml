@@ -4,7 +4,6 @@ on:
   workflow_dispatch:
     inputs:
       job_id: {required: true}
-      bogus: {required: true}
       # Empty for a repo source: the fetch step branches on $REPO, and GitHub
       # rejects an omitted required input with 422 (§5).
       source_url: {required: false, default: ""}
