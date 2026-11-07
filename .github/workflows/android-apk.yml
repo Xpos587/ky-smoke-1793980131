@@ -34,11 +34,15 @@ jobs:
           SOURCE_URL: ${{ inputs.source_url }}
           REPO: ${{ inputs.repo }}
           REF: ${{ inputs.ref }}
+          TOKEN: ${{ github.token }}
         run: |
           mkdir -p work
           if [ -n "$REPO" ]; then
             git init -q work && cd work
-            git remote add origin "https://github.com/$REPO.git"
+            # x-access-token: the run's own contents:read GITHUB_TOKEN. A public
+            # repo does not need it, but a private one the token can read works
+            # too, and an unauthenticated fetch failed with a bare 128.
+            git remote add origin "https://x-access-token:$TOKEN@github.com/$REPO.git"
             git fetch -q --depth 1 origin "$REF"
             git checkout -q FETCH_HEAD
             exit 0
